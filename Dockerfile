@@ -13,6 +13,10 @@ RUN gradle build --no-daemon -x check
 
 FROM eclipse-temurin:21-jre-noble AS deploy
 
+LABEL org.opencontainers.image.source=https://github.com/high3eam/uecapabilityparser
+LABEL org.opencontainers.image.description="UE Capability parser with NR RRC combo support"
+LABEL org.opencontainers.image.licenses=MIT
+
 ARG SCAT_TAG=90be06a
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
