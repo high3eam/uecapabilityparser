@@ -1,7 +1,11 @@
 {
     "logType": "",
-    "metadata": {},
+    "metadata": {
+        "source": "RRC-NR VER. 0.13",
+        "numCombos": "1203"
+    },
     "id": "",
     "parserVersion": "staging",
-    "timestamp": 0
+    "timestamp": 0,
+    "nrca": []
 }

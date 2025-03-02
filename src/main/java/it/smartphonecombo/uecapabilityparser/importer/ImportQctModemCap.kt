@@ -7,26 +7,29 @@ import it.smartphonecombo.uecapabilityparser.model.BwClass
 import it.smartphonecombo.uecapabilityparser.model.Capabilities
 import it.smartphonecombo.uecapabilityparser.model.EmptyMimo
 import it.smartphonecombo.uecapabilityparser.model.combo.ComboLte
+import it.smartphonecombo.uecapabilityparser.model.combo.ComboNr
 import it.smartphonecombo.uecapabilityparser.model.component.ComponentLte
+import it.smartphonecombo.uecapabilityparser.model.component.ComponentNr
 import it.smartphonecombo.uecapabilityparser.model.modulation.ModulationOrder
 import it.smartphonecombo.uecapabilityparser.model.modulation.toModulation
 import it.smartphonecombo.uecapabilityparser.model.toMimo
 
-/** A parser for LTE Combinations as reported by Qct Modem Capabilities */
+/** A parser for LTE and NR Combinations as reported by Qct Modem Capabilities */
 object ImportQctModemCap : ImportCapabilities {
 
     /**
-     * This parser take as [input] a [InputSource] containing LTE Combinations as reported by Qct
+     * This parser take as [input] a [InputSource] containing LTE or NR Combinations as reported by Qct
      * Modem Capabilities.
      *
      * The output is a [Capabilities] with the list of parsed LTE combos stored in
-     * [lteCombos][Capabilities.lteCombos].
+     * [lteCombos][Capabilities.lteCombos] and NR combos stored in [nrCombos][Capabilities.nrCombos].
      *
      * It can parse multiple messages in the same input.
      */
     override fun parse(input: InputSource): Capabilities {
         val capabilities = Capabilities()
-        val listCombo = mutableListOf<ComboLte>()
+        val listLteCombo = mutableListOf<ComboLte>()
+        val listNrCombo = mutableListOf<ComboNr>()
 
         input.useLines { seq ->
             try {
@@ -41,34 +44,37 @@ object ImportQctModemCap : ImportCapabilities {
                         continue
                     }
 
-                    if (source.equals("RRC", true) && type?.contains("NR", true) == true) {
-                        // NR RRC CA combos not supported
-                        continue
-                    }
+                    val isNrRrc = source.equals("RRC", true) && type?.contains("NR", true) == true
 
                     val sourceStr = "${source}-${type}".uppercase()
                     capabilities.addMetadata("source", sourceStr)
                     capabilities.addMetadata("numCombos", numCombos)
 
-                    val indexDl = combosHeader.indexOf("DL Bands", ignoreCase = true)
-                    val indexUl = combosHeader.indexOf("UL Bands", ignoreCase = true)
+                    if (isNrRrc) {
+                        // Parse NR RRC combos
+                        parseNrRrcCombos(lines, numCombos, listNrCombo)
+                    } else {
+                        // Parse LTE combos
+                        val indexDl = combosHeader.indexOf("DL Bands", ignoreCase = true)
+                        val indexUl = combosHeader.indexOf("UL Bands", ignoreCase = true)
 
-                    // This is used for DLCA > 5
-                    val indexBands = combosHeader.indexOf("Bands", ignoreCase = true)
-                    val twoRowFormat = indexBands > -1 && indexDl < 0
+                        // This is used for DLCA > 5
+                        val indexBands = combosHeader.indexOf("Bands", ignoreCase = true)
+                        val twoRowFormat = indexBands > -1 && indexDl < 0
 
-                    if (!twoRowFormat && (indexDl < 0 || indexUl < 0)) {
-                        continue
-                    }
+                        if (!twoRowFormat && (indexDl < 0 || indexUl < 0)) {
+                            continue
+                        }
 
-                    repeat(numCombos) {
-                        val combo =
-                            if (twoRowFormat) {
-                                parseComboTwoRow(lines.next(), lines.next(), indexBands)
-                            } else {
-                                parseCombo(lines.next(), indexDl, indexUl)
-                            }
-                        combo?.let { listCombo.add(it) }
+                        repeat(numCombos) {
+                            val combo =
+                                if (twoRowFormat) {
+                                    parseComboTwoRow(lines.next(), lines.next(), indexBands)
+                                } else {
+                                    parseCombo(lines.next(), indexDl, indexUl)
+                                }
+                            combo?.let { listLteCombo.add(it) }
+                        }
                     }
                 }
             } catch (ignored: NoSuchElementException) {
@@ -76,9 +82,57 @@ object ImportQctModemCap : ImportCapabilities {
             }
         }
 
-        capabilities.lteCombos = listCombo
+        capabilities.lteCombos = listLteCombo
+        capabilities.nrCombos = listNrCombo
 
         return capabilities
+    }
+    
+    /**
+     * Parse NR RRC combos from the QCT modem output
+     */
+    private fun parseNrRrcCombos(
+        lines: Iterator<String>,
+        numCombos: Int,
+        listNrCombo: MutableList<ComboNr>
+    ) {
+        repeat(numCombos) {
+            try {
+                // Each combo consists of two lines: DL and UL
+                val dlLine = lines.next()
+                val ulLine = lines.next()
+                
+                // Extract the DL components from the first line
+                val dlComponents = parseNrComponents(extractNrBandsString(dlLine), true)
+                
+                // Extract the UL components from the second line
+                val ulComponents = parseNrComponents(extractNrBandsString(ulLine), false)
+                
+                // Create a ComboNr with the DL components
+                val combo = ComboNr(dlComponents)
+                
+                listNrCombo.add(combo)
+            } catch (e: Exception) {
+                // Skip this combo if parsing fails
+            }
+        }
+    }
+    
+    /**
+     * Extract the band string from an NR RRC line
+     */
+    private fun extractNrBandsString(line: String): String {
+        // Skip the combo number at the beginning of the line
+        val startIndex = line.indexOfFirst { it.isLetter() || it == '̵' }
+        if (startIndex == -1) return ""
+        
+        // Extract until the capacity information (if present)
+        val capacityIndex = line.indexOf("G ", startIndex)
+        return if (capacityIndex > 0) {
+            line.substring(startIndex, capacityIndex).trim()
+        } else {
+            line.substring(startIndex).trim()
+        }
     }
 
     /**
@@ -130,6 +184,20 @@ object ImportQctModemCap : ImportCapabilities {
         }
         return components
     }
+    
+    /** Converts the given NR componentsString to a List of [ComponentNr]. */
+    private fun parseNrComponents(componentsString: String, isDl: Boolean): List<ComponentNr> {
+        val components = mutableListWithCapacity<ComponentNr>(6)
+        for (componentStr in componentsString.split(' ')) {
+            if (componentStr.isNotBlank()) {
+                val component = parseNrComponent(componentStr, isDl)
+                if (component != null) {
+                    components.add(component)
+                }
+            }
+        }
+        return components
+    }
 
     /**
      * Regex used to extract the various parts of a component.
@@ -145,6 +213,16 @@ object ImportQctModemCap : ImportCapabilities {
      */
     private val componentRegex =
         """(\d{1,3})([A-Fa-f])([124]?(?:\p{Zs}[₁₂₄]){0,4})([⁰¹²⁴⁵⁶]{0,4})""".toRegex()
+        
+    /**
+     * Regex used to extract the various parts of an NR component.
+     * 
+     * Example: 3a4 ̵ͣ40
+     * 
+     * The format is: <band><bwClass><mimo> ̵ͣ<powerClass><modulation>
+     */
+    private val nrComponentRegex =
+        """(\d{1,3})([a-z])([124])(?: ̵ͣ(\d{1,2}))?([⁰¹²⁴⁵⁶]{0,4})?""".toRegex()
 
     /**
      * Converts the given componentString to a [ComponentLte].
@@ -166,6 +244,33 @@ object ImportQctModemCap : ImportCapabilities {
         } else {
             val modUL = ModulationOrder.of(modRegex.superscriptToDigit()).toModulation()
             ComponentLte(baseBand, classUL = bwClass, mimoUL = mimo, modUL = modUL)
+        }
+    }
+    
+    /**
+     * Converts the given componentString to a [ComponentNr].
+     *
+     * Returns null if parsing fails.
+     */
+    private fun parseNrComponent(componentString: String, isDl: Boolean): ComponentNr? {
+        val result = nrComponentRegex.find(componentString) ?: return null
+
+        val groupValues = result.groupValues
+        val bandRegex = groupValues[1]
+        val bwClassRegex = groupValues[2]
+        val mimoRegex = groupValues[3]
+        val powerClassRegex = groupValues.getOrNull(4)
+        val modRegex = groupValues.getOrNull(5)
+
+        val baseBand = bandRegex.toInt()
+        val bwClass = BwClass.valueOf(bwClassRegex)
+        val mimo = mimoRegex.toIntOrNull()?.toMimo() ?: EmptyMimo
+
+        return if (isDl) {
+            ComponentNr(baseBand, classDL = bwClass, mimoDL = mimo)
+        } else {
+            val modUL = ModulationOrder.of(modRegex?.superscriptToDigit() ?: "").toModulation()
+            ComponentNr(baseBand, classUL = bwClass, mimoUL = mimo, modUL = modUL)
         }
     }
 
